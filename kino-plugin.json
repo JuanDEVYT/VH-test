@@ -1,0 +1,25 @@
+{
+  "id": "veohentai",
+  "name": "VeoHentai",
+  "version": "1.0.3",
+  "apiVersion": 6,
+  "entry": "plugin.js",
+  "description": "Hentai subtitulado al español: catálogo, series y episodios con reproductor propio del sitio",
+  "author": "Vaysin",
+  "hosts": [
+    "veohentai.com",
+    "*.veohentai.com",
+    "hentaiplayer.com",
+    "*.hentaiplayer.com"
+  ],
+  "streamHosts": "any",
+  "browser": true,
+  "capabilities": [
+    "search",
+    "home",
+    "episodes",
+    "resolve"
+  ],
+  "color": "#E23A5E",
+  "icon": "icon.png"
+}
