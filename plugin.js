@@ -851,8 +851,16 @@ async function captureViaBrowser(embedUrl, episodeUrl) {
     return null;
   }
 
-  // Usar los headers que capturó el browser tal cual
+  // Los headers capturados deben ir al reproductor tal cual — el CDN los valida.
+  // Si vienen vacíos, forzamos los mínimos que r2.1hanime.com exige.
   const capturedHeaders = Object.assign({}, item.headers || {});
+
+  if (!capturedHeaders.Referer && !capturedHeaders.referer) {
+    capturedHeaders.Referer = embedUrl;
+  }
+  if (!capturedHeaders.Origin && !capturedHeaders.origin) {
+    capturedHeaders.Origin = PLAYER;
+  }
 
   log("Browser capture OK", url);
 
