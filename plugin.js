@@ -709,8 +709,10 @@ async function episodeHtml(slug, num) {
   }
 }
 
-async function playServer(entry, episodeUrl) {
-  const referer = episodeUrl || (BASE + "/");
+async function playServer(entry, episodeUrl, embedUrl) {
+  // El CDN valida Referer del player embed, no del episodio en veohentai.
+  // Si tenemos embedUrl lo usamos; si no, caemos al PLAYER base.
+  const referer = embedUrl || PLAYER + "/";
 
   if (typeof entry === "string" && /^https?:\/\//i.test(entry)) {
     return {
@@ -827,10 +829,8 @@ async function captureViaBrowser(embedUrl, episodeUrl) {
   log("Browser capture", embedUrl);
 
   const result = await kino.browser.capture(embedUrl, {
-    referer: episodeUrl,
-    waitForRequests: [
-      { urlPattern: /\.(mp4|m3u8)(\?|$)/i }
-    ],
+    headers: { Referer: episodeUrl || (BASE + "/") },
+    match: "\\.mp4|/playlist\\.m3u8|/index\\.m3u8|\\.m3u8",
     timeoutMs: 20000
   });
 
@@ -890,7 +890,7 @@ export async function resolve(ref) {
       parts.slice(1).join("~")
     );
 
-    return await playServer(entry, BASE + "/");
+    return await playServer(entry, BASE + "/", PLAYER + "/");
   }
 
   if (parts[0] !== "v" || !parts[1]) {
@@ -927,13 +927,16 @@ export async function resolve(ref) {
     });
   }
 
-  const episodeUrl = abs("/ver/" + slug + "/");
+  const episodeSlug = /-episodio-\d+$/i.test(slug)
+    ? slug
+    : slug + "-episodio-" + num;
+  const episodeUrl = abs("/ver/" + episodeSlug + "/");
 
   // --- Ruta principal: browser capture para obtener URL autenticada ---
   let browserStream = null;
 
   try {
-    browserStream = await captureViaPlayer(embed, episodeUrl);
+    browserStream = await captureViaBrowser(embed, episodeUrl);
   } catch (e) {
     log("Browser capture falló", e.message);
   }
@@ -953,7 +956,7 @@ export async function resolve(ref) {
   let page;
 
   try {
-    page = await getText(embed, episodeUrl);
+    page = await getText(embed, BASE + "/");
   } catch (e) {
     throw kino.error(
       "unavailable",
@@ -986,7 +989,7 @@ export async function resolve(ref) {
 
   log("Servidores encontrados (fallback)", servers.length);
 
-  const stream = await playServer(servers[0], episodeUrl);
+  const stream = await playServer(servers[0], episodeUrl, embed);
   const alternatives = [];
 
   for (let i = 1; i < servers.length; i++) {
@@ -1013,5 +1016,4 @@ export async function resolve(ref) {
   };
 }
 
-// Alias interno para claridad
-const captureViaPlayer = captureViaBrowser;
+
