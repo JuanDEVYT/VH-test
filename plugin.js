@@ -830,7 +830,7 @@ async function captureViaBrowser(embedUrl, episodeUrl) {
 
   const result = await kino.browser.capture(embedUrl, {
     headers: { Referer: episodeUrl || (BASE + "/") },
-    match: "\\.mp4|/playlist\\.m3u8|/index\\.m3u8|\\.m3u8",
+    match: "\\.mp4(\\?|$)|\\.m3u8(\\?|$)",
     timeoutMs: 20000
   });
 
