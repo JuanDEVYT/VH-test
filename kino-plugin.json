@@ -1,10 +1,10 @@
 {
   "id": "veohentai",
   "name": "VeoHentai",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "apiVersion": 6,
   "entry": "plugin.js",
-  "description": "Hentai subtitulado al español: catálogo, series y episodios con reproductor propio del sitio",
+  "description": "Hentai subtitulado al espa\u00f1ol: cat\u00e1logo, series y episodios con reproductor propio del sitio",
   "author": "Vaysin",
   "hosts": [
     "veohentai.com",
