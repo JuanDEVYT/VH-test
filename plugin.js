@@ -834,57 +834,47 @@ async function captureViaBrowser(embedUrl, episodeUrl) {
     timeoutMs: 20000
   });
 
-  log("Browser raw result", JSON.stringify(result).slice(0, 800));
+  // kino.browser.capture devuelve { media, subtitles, requests, finalUrl }
+  // El video está en result.media[0]
+  const media = result && Array.isArray(result.media) ? result.media : [];
 
-  if (!result || !result.requests || !result.requests.length) {
-    log("Browser capture: sin requests");
+  if (!media.length) {
+    log("Browser capture: sin media");
     return null;
   }
 
-  for (const req of result.requests) {
-    const url = req.url || "";
+  const item = media[0];
+  const url = item.url || "";
 
-    if (!/\.(mp4|m3u8)(\?|$)/i.test(url)) continue;
-    if (!/^https?:\/\//i.test(url)) continue;
-
-    const capturedHeaders = {};
-
-    if (req.headers) {
-      for (const [k, v] of Object.entries(req.headers)) {
-        const name = String(k).toLowerCase();
-
-        if (
-          name === "referer" ||
-          name === "origin" ||
-          name === "cookie" ||
-          name.startsWith("x-")
-        ) {
-          capturedHeaders[k] = v;
-        }
-      }
-    }
-
-    // Siempre garantizar Referer y Origin
-    if (!capturedHeaders["Referer"] && !capturedHeaders["referer"]) {
-      capturedHeaders["Referer"] = episodeUrl;
-    }
-
-    if (!capturedHeaders["Origin"] && !capturedHeaders["origin"]) {
-      capturedHeaders["Origin"] = PLAYER;
-    }
-
-    log("Browser capture OK", url);
-
-    return {
-      url,
-      mime: /\.m3u8(\?|$)/i.test(url)
-        ? "application/x-mpegURL"
-        : "video/mp4",
-      headers: capturedHeaders
-    };
+  if (!/^https?:\/\//i.test(url)) {
+    log("Browser capture: URL inválida", url);
+    return null;
   }
 
-  return null;
+  // Usar los headers que capturó el browser tal cual
+  const capturedHeaders = Object.assign({}, item.headers || {});
+
+  log("Browser capture OK", url);
+
+  const stream = {
+    url,
+    mime: item.mime || (/\.m3u8(\?|$)/i.test(url) ? "application/x-mpegURL" : "video/mp4"),
+    headers: capturedHeaders
+  };
+
+  // Subtítulos capturados por el browser
+  const subs = result.subtitles || [];
+  if (subs.length) {
+    stream.subtitles = subs
+      .filter(s => s && /^https?:\/\//i.test(s.url || ""))
+      .map(s => ({
+        url: s.url,
+        lang: s.lang || "es",
+        format: /\.vtt(\?|$)/i.test(s.url) ? "vtt" : "srt"
+      }));
+  }
+
+  return stream;
 }
 
 export async function resolve(ref) {

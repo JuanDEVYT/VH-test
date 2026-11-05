@@ -1,14 +1,14 @@
 {
   "format": 1,
-  "exportedAt": "2026-11-05T04:06:09.000Z",
+  "exportedAt": "2026-11-05T04:10:13.000Z",
   "pluginId": "veohentai",
   "name": "VeoHentai",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "originalAddress": "sonny-debug12/veohentai-kino@main",
   "kinoVersion": "0.9.82",
   "files": {
     "icon.png": "93abd3709211d48a747eeefcbfed61837c0cdc384e57ff0b817819ab12f3d562",
-    "kino-plugin.json": "accee41c4cb7a120f6447b8eab337730adf44258d7a819657f36c2583d33fb3a",
-    "plugin.js": "3d2b2d5d65e538dba6c37bafe9b0a7dbf9963c376cc15b5c9e1846e33bfb8d1f"
+    "kino-plugin.json": "2c1289cbc5d697ccdde0be6ecf4ed08cac517dc0404ee379d66f3a0763f7aefb",
+    "plugin.js": "d81a9bdb387fc89104864c67421f4e2a104c731986ef8061cb98a3c9938557ef"
   }
 }
