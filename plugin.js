@@ -834,7 +834,10 @@ async function captureViaBrowser(embedUrl, episodeUrl) {
     timeoutMs: 20000
   });
 
+  log("Browser raw result", JSON.stringify(result).slice(0, 800));
+
   if (!result || !result.requests || !result.requests.length) {
+    log("Browser capture: sin requests");
     return null;
   }
 
