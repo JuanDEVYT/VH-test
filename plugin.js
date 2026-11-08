@@ -5,7 +5,7 @@ const TIMEOUT = 12000;
 const MAX_ITEMS = 60;
 const MAX_EPISODES = 3000;
 const LOG_PREFIX = "[veohentai]";
-const VERSION = "1.2.2";
+const VERSION = "1.2.3";
 const UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
 
 function log(...args) {
@@ -920,22 +920,24 @@ function buildStreamHeaders(itemHeaders, pageResult, embedUrl) {
   return h;
 }
 
+// Tamaño mínimo en bytes para considerar un stream como contenido real.
+// Dreamserve sirve anuncios de ~3-5 MB; el contenido real supera los 50 MB.
+// Si ningún stream supera este umbral, el capture devuelve null y el resolve
+// cae al último recurso (parseo directo del player) en vez de reproducir el anuncio.
+const MIN_CONTENT_BYTES = 10 * 1024 * 1024; // 10 MB
+
 // Captura el request real al video usando kino.browser.
-// Estrategia principal (captureAll disponible):
-//   - waitForCookie: "cf_clearance" → espera a que Cloudflare sette la cookie
-//     antes de capturar, así el token firmado de r2.1hanime.com llega con
-//     la sesión válida; si el CDN no usa Bot Management simplemente captura normal.
-//   - captureAll: true → recoge todas las coincidencias, luego sondea por tamaño.
-// Fallback (captureAll no disponible o primer intento fallido):
-//   - capture normal sin waitForCookie.
+// Ruta A (Kino ≥ 0.9.54, captureAll): recoge todas las coincidencias, sondea
+//   por tamaño con los headers exactos que el browser capturó y descarta anuncios.
+// Ruta B (Kino < 0.9.54): capture simple, misma lógica de selección.
 async function captureViaBrowser(embedUrl, episodeUrl) {
   log("Browser capture", embedUrl);
 
   const captureHeaders = { Referer: episodeUrl || (BASE + "/") };
 
-  // ── Ruta A: captureAll + waitForCookie (Kino ≥ 0.9.54) ──────────────────────
+  // ── Ruta A: captureAll (Kino ≥ 0.9.54) ──────────────────────────────────────
   if (kino.browser.captureAll === true) {
-    log("captureAll disponible → usando waitForCookie=cf_clearance");
+    log("captureAll disponible");
 
     let result;
     try {
@@ -943,47 +945,31 @@ async function captureViaBrowser(embedUrl, episodeUrl) {
         headers: captureHeaders,
         match: MEDIA_MATCH,
         captureAll: true,
-        waitForCookie: "cf_clearance",
-        returnCookiesOnTimeout: true,
         timeoutMs: 25000
       });
     } catch (e) {
-      // blocked / browser_unavailable → no reintentamos aquí; el llamador intenta fallback.
-      log("captureAll/waitForCookie falló:", e.message);
+      log("captureAll falló:", e.message);
       throw e;
     }
 
-    if (result.timedOut) {
-      log("captureAll: timeout (cf_clearance no llegó o sin video en 25 s)");
-      // Si hay requests de alsoMatch, podríamos extraer info, pero aquí no usamos alsoMatch.
-      // Intentamos de todas formas con lo que haya.
-    }
-
+    // requests tiene los headers exactos que la página mandó al CDN, incluyendo
+    // cualquier Cookie o token de sesión — más completo que media en edge cases.
     const requests = result.requests || [];
-
-    // Buscar en requests (capturados con sus headers completos + cookies de sesión).
-    // requests[i] = { url, method, headers } donde headers ya llevan Cookie de la página.
     const mediaRequests = requests.filter(r => new RegExp(MEDIA_MATCH, "i").test(r.url));
-
-    // También mirar result.media que devuelve la API estándar.
     const mediaItems = Array.isArray(result.media) ? result.media : [];
 
-    // Unificar: preferir requests (tienen headers más ricos de la sesión real)
-    // sobre media (que son los mismos pero pueden llegar con menos headers en edge cases).
     const candidates = mediaRequests.length
       ? mediaRequests.map(r => ({ url: r.url, headers: r.headers || {}, mime: undefined }))
       : mediaItems.map(m => ({ url: m.url, headers: m.headers || {}, mime: m.mime }));
 
     if (!candidates.length) {
-      log("captureAll: sin candidatos de video");
-      // Caer al fallback simple.
+      log("captureAll: sin candidatos, cayendo a simple");
       return await captureViaBrowserSimple(embedUrl, episodeUrl);
     }
 
-    // Sondear en paralelo — headers del browser + cookies CF inyectadas.
     const probed = await Promise.all(
       candidates.map(async c => {
-        let url = extractJwUrl(c.url || "");
+        const url = extractJwUrl(c.url || "");
         if (!/^https?:\/\//i.test(url)) return null;
         const h = buildStreamHeaders(c.headers, result, embedUrl);
         const p = await probeUrl(url, h, 5000);
@@ -997,31 +983,20 @@ async function captureViaBrowser(embedUrl, episodeUrl) {
       })
     );
 
-    const accessible = probed
-      .filter(p => p && p.ok)
+    // Solo contenido real: accesible y > MIN_CONTENT_BYTES.
+    const content = probed
+      .filter(p => p && p.ok && p.bytes > MIN_CONTENT_BYTES)
       .sort((a, b) => b.bytes - a.bytes);
 
-    // Umbral de anuncio: si todos los accesibles son < 10 MB, probablemente anuncios.
-    // El contenido real de hentaiplayer suele pesar > 50 MB.
-    const content = accessible.filter(p => p.bytes > 10 * 1024 * 1024);
-
-    const picked = content.length
-      ? content[0]
-      : accessible.length
-        ? accessible[0]
-        : probed.filter(Boolean)[0];
-
-    if (!picked || !/^https?:\/\//i.test(picked.url)) {
-      log("captureAll: probe no encontró URL válida, cayendo a fallback simple");
+    if (!content.length) {
+      log("captureAll: sin contenido real (todos 403 o < 10 MB), cayendo a simple");
       return await captureViaBrowserSimple(embedUrl, episodeUrl);
     }
 
-    if (accessible.length && !content.length) {
-      log("Advertencia: solo streams pequeños (<10 MB), posible anuncio");
-    }
-
-    log("captureAll OK →", picked.url.replace(/^https?:\/\//, "").split("/").slice(0, 3).join("/"),
-      picked.bytes ? (picked.bytes / 1048576).toFixed(1) + " MB" : "");
+    const picked = content[0];
+    log("captureAll OK →",
+      picked.url.replace(/^https?:\/\//, "").split("/").slice(0, 3).join("/"),
+      (picked.bytes / 1048576).toFixed(1) + " MB");
 
     const stream = {
       url: picked.url,
@@ -1082,11 +1057,17 @@ async function captureViaBrowserSimple(embedUrl, episodeUrl) {
     })
   );
 
-  const accessible = probeResults
-    .filter(p => p.ok)
+  // Solo contenido real: accesible y > MIN_CONTENT_BYTES.
+  const content = probeResults
+    .filter(p => p.ok && p.bytes > MIN_CONTENT_BYTES)
     .sort((a, b) => b.bytes - a.bytes);
 
-  const item = accessible.length ? accessible[0].m : validMedia[0];
+  if (!content.length) {
+    log("Browser capture simple: sin contenido real (todos 403 o < 10 MB)");
+    return null;
+  }
+
+  const item = content[0].m;
   const url = extractJwUrl(item.url || "");
 
   if (!/^https?:\/\//i.test(url)) {
@@ -1096,7 +1077,8 @@ async function captureViaBrowserSimple(embedUrl, episodeUrl) {
 
   const capturedHeaders = buildStreamHeaders(item.headers, null, embedUrl);
 
-  log("Browser capture simple OK", url);
+  log("Browser capture simple OK", url,
+    (content[0].bytes / 1048576).toFixed(1) + " MB");
 
   const stream = {
     url,
