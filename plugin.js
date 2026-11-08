@@ -5,6 +5,7 @@ const TIMEOUT = 12000;
 const MAX_ITEMS = 60;
 const MAX_EPISODES = 3000;
 const LOG_PREFIX = "[veohentai]";
+const VERSION = "1.1.1";
 const UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
 
 function log(...args) {
@@ -12,6 +13,8 @@ function log(...args) {
     kino.log(LOG_PREFIX, ...args);
   } catch {}
 }
+
+log("VeoHentai v" + VERSION + " • creado por Sonny Itsuka y JuandreXter");
 
 function es() {
   return String(kino.lang || "es-CO").toLowerCase().indexOf("en") !== 0;
@@ -845,7 +848,19 @@ async function captureViaBrowser(embedUrl, episodeUrl) {
   }
 
   const item = media[0];
-  const url = item.url || "";
+  let url = item.url || "";
+
+  // JWPlayer a veces dispara primero el ping de analytics (prd.jwpltx.com)
+  // con la URL real del video codificada en el parámetro mu=.
+  // Extraemos esa URL en vez de descartar el resultado.
+  if (/prd\.jwpltx\.com/i.test(url)) {
+    const muM = /[?&]mu=([^&]+)/.exec(url);
+    if (muM) {
+      try { url = decodeURIComponent(decodeURIComponent(muM[1])); }
+      catch { url = decodeURIComponent(muM[1]); }
+      log("Browser capture: URL extraída del ping de analytics", url);
+    }
+  }
 
   if (!/^https?:\/\//i.test(url)) {
     log("Browser capture: URL inválida", url);
