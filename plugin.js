@@ -5,7 +5,7 @@ const TIMEOUT = 12000;
 const MAX_ITEMS = 60;
 const MAX_EPISODES = 3000;
 const LOG_PREFIX = "[veohentai]";
-const VERSION = "1.1.4";
+const VERSION = "1.1.5";
 const UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
 
 function log(...args) {
@@ -834,7 +834,7 @@ async function captureViaBrowser(embedUrl, episodeUrl) {
 
   const result = await kino.browser.capture(embedUrl, {
     headers: { Referer: episodeUrl || (BASE + "/") },
-    match: "^https?://(?!.*(?:ad[sz]?[.-]|doubleclick|googlesyndication|adnxs|advertising|adserver|adcdn|adsterra|popads|popcash|trafficjunky|adspyglass|exoclick|juicyads|plugrush|trafficfactory|adultadworld))[^?#]+\\.mp4(\\?|$)|^https?://(?!.*(?:ad[sz]?[.-]|doubleclick|googlesyndication|adnxs|advertising|adserver|adcdn|adsterra|popads|popcash|trafficjunky|adspyglass|exoclick|juicyads|plugrush|trafficfactory|adultadworld))[^?#]+\\.m3u8(\\?|$)",
+    match: "^https?://(?!.*(?:ad[sz]?[.-]|doubleclick|googlesyndication|adnxs|advertising|adserver|adcdn|adsterra|popads|popcash|trafficjunky|adspyglass|exoclick|juicyads|plugrush|trafficfactory|adultadworld|trafficstars|realsrv|adskeeper|adspirit|adtng|addgp|adformats|hilltopads|adspree|adspyglass|propellerads|xxxstreams-ads|pornads|pornad|adxxx|adjuggler|liveadexchanger))[^?#]+\\.mp4(\\?|$)|^https?://(?!.*(?:ad[sz]?[.-]|doubleclick|googlesyndication|adnxs|advertising|adserver|adcdn|adsterra|popads|popcash|trafficjunky|adspyglass|exoclick|juicyads|plugrush|trafficfactory|adultadworld|trafficstars|realsrv|adskeeper|adspirit|adtng|addgp|adformats|hilltopads|adspree|adspyglass|propellerads|xxxstreams-ads|pornads|pornad|adxxx|adjuggler|liveadexchanger))[^?#]+\\.m3u8(\\?|$)",
     timeoutMs: 25000
   });
 
@@ -842,12 +842,18 @@ async function captureViaBrowser(embedUrl, episodeUrl) {
   // El video está en result.media[0]
   const media = result && Array.isArray(result.media) ? result.media : [];
 
-  if (!media.length) {
-    log("Browser capture: sin media");
+  // Descartar streams cortos (anuncios): menos de 5 minutos
+  const MIN_DURATION_S = 300;
+  const validMedia = media.filter(
+    item => typeof item.duration !== "number" || item.duration >= MIN_DURATION_S
+  );
+
+  if (!validMedia.length) {
+    log("Browser capture: sin media válida (todos <5 min o sin video)");
     return null;
   }
 
-  const item = media[0];
+  const item = validMedia[0];
   let url = item.url || "";
 
   // JWPlayer a veces dispara primero el ping de analytics (prd.jwpltx.com)
@@ -984,14 +990,17 @@ export async function resolve(ref) {
   try {
     const result2 = await kino.browser.capture(embed, {
       headers: { Referer: episodeUrl || (BASE + "/") },
-      match: "^https?://(?!.*(?:ad[sz]?[.-]|doubleclick|googlesyndication|adnxs|advertising|adserver|adcdn|adsterra|popads|popcash|trafficjunky|adspyglass|exoclick|juicyads|plugrush|trafficfactory|adultadworld))[^?#]+\\.mp4(\\?|$)|^https?://(?!.*(?:ad[sz]?[.-]|doubleclick|googlesyndication|adnxs|advertising|adserver|adcdn|adsterra|popads|popcash|trafficjunky|adspyglass|exoclick|juicyads|plugrush|trafficfactory|adultadworld))[^?#]+\\.m3u8(\\?|$)|prd\\.jwpltx\\.com",
+      match: "^https?://(?!.*(?:ad[sz]?[.-]|doubleclick|googlesyndication|adnxs|advertising|adserver|adcdn|adsterra|popads|popcash|trafficjunky|adspyglass|exoclick|juicyads|plugrush|trafficfactory|adultadworld|trafficstars|realsrv|adskeeper|adspirit|adtng|addgp|adformats|hilltopads|adspree|adspyglass|propellerads|xxxstreams-ads|pornads|pornad|adxxx|adjuggler|liveadexchanger))[^?#]+\\.mp4(\\?|$)|^https?://(?!.*(?:ad[sz]?[.-]|doubleclick|googlesyndication|adnxs|advertising|adserver|adcdn|adsterra|popads|popcash|trafficjunky|adspyglass|exoclick|juicyads|plugrush|trafficfactory|adultadworld|trafficstars|realsrv|adskeeper|adspirit|adtng|addgp|adformats|hilltopads|adspree|adspyglass|propellerads|xxxstreams-ads|pornads|pornad|adxxx|adjuggler|liveadexchanger))[^?#]+\\.m3u8(\\?|$)|prd\\.jwpltx\\.com",
       timeoutMs: 25000
     });
 
     const media2 = result2 && Array.isArray(result2.media) ? result2.media : [];
+    const validMedia2 = media2.filter(
+      m => typeof m.duration !== "number" || m.duration >= 300
+    );
 
-    if (media2.length) {
-      let url2 = media2[0].url || "";
+    if (validMedia2.length) {
+      let url2 = validMedia2[0].url || "";
 
       if (/prd\.jwpltx\.com/i.test(url2)) {
         const muM = /[?&]mu=([^&]+)/.exec(url2);
@@ -1003,7 +1012,7 @@ export async function resolve(ref) {
       }
 
       if (/^https?:\/\//i.test(url2)) {
-        const capturedHeaders2 = Object.assign({}, media2[0].headers || {});
+        const capturedHeaders2 = Object.assign({}, validMedia2[0].headers || {});
         if (!capturedHeaders2.Referer && !capturedHeaders2.referer) capturedHeaders2.Referer = embed;
         if (!capturedHeaders2.Origin && !capturedHeaders2.origin) capturedHeaders2.Origin = PLAYER;
 
