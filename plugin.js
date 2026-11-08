@@ -5,7 +5,7 @@ const TIMEOUT = 12000;
 const MAX_ITEMS = 60;
 const MAX_EPISODES = 3000;
 const LOG_PREFIX = "[veohentai]";
-const VERSION = "1.1.8";
+const VERSION = "1.1.9";
 const UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
 
 function log(...args) {
@@ -853,13 +853,9 @@ async function captureViaBrowser(embedUrl, episodeUrl) {
     return null;
   }
 
-  // Deprioritize session-bound signed URLs (verify= token requires the capture browser context)
-  const sortedMedia = [...validMedia].sort((a, b) => {
-    const aV = /[?&]verify=/i.test(a.url || "");
-    const bV = /[?&]verify=/i.test(b.url || "");
-    return aV - bV; // non-verify first
-  });
-  const item = sortedMedia[0];
+  // dreamserve.dev = ad CDN; skip it and prefer the actual content URL
+  const contentMedia = validMedia.filter(m => !/dreamserve\.dev/i.test(m.url || ""));
+  const item = contentMedia.length ? contentMedia[0] : validMedia[0];
   let url = item.url || "";
 
   // JWPlayer a veces dispara primero el ping de analytics (prd.jwpltx.com)
@@ -888,6 +884,12 @@ async function captureViaBrowser(embedUrl, episodeUrl) {
   }
   if (!capturedHeaders.Origin && !capturedHeaders.origin) {
     capturedHeaders.Origin = PLAYER;
+  }
+  // 1hanime signed URLs: force Referer + Origin + UA so the CDN worker validates correctly
+  if (/1hanime\.com/i.test(url)) {
+    capturedHeaders.Referer = embedUrl;
+    capturedHeaders.Origin = PLAYER;
+    capturedHeaders["User-Agent"] = UA;
   }
 
   log("Browser capture OK", url);
@@ -1006,12 +1008,9 @@ export async function resolve(ref) {
     );
 
     if (validMedia2.length) {
-      const sortedMedia2 = [...validMedia2].sort((a, b) => {
-        const aV = /[?&]verify=/i.test(a.url || "");
-        const bV = /[?&]verify=/i.test(b.url || "");
-        return aV - bV;
-      });
-      let url2 = sortedMedia2[0].url || "";
+      const contentMedia2 = validMedia2.filter(m => !/dreamserve\.dev/i.test(m.url || ""));
+      const picked2 = contentMedia2.length ? contentMedia2[0] : validMedia2[0];
+      let url2 = picked2.url || "";
 
       if (/prd\.jwpltx\.com/i.test(url2)) {
         const muM = /[?&]mu=([^&]+)/.exec(url2);
@@ -1023,7 +1022,7 @@ export async function resolve(ref) {
       }
 
       if (/^https?:\/\//i.test(url2)) {
-        const capturedHeaders2 = Object.assign({}, sortedMedia2[0].headers || {});
+        const capturedHeaders2 = Object.assign({}, picked2.headers || {});
         if (!capturedHeaders2.Referer && !capturedHeaders2.referer) capturedHeaders2.Referer = embed;
         if (!capturedHeaders2.Origin && !capturedHeaders2.origin) capturedHeaders2.Origin = PLAYER;
 
