@@ -5,7 +5,7 @@ const TIMEOUT = 12000;
 const MAX_ITEMS = 60;
 const MAX_EPISODES = 3000;
 const LOG_PREFIX = "[veohentai]";
-const VERSION = "1.2.0";
+const VERSION = "1.2.1";
 const UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
 
 function log(...args) {
@@ -895,17 +895,17 @@ async function captureViaBrowser(embedUrl, episodeUrl) {
     return null;
   }
 
-  // Sondear todas las URLs capturadas en paralelo:
-  // - dreamserve.dev a veces sirve anuncios de ~1-5 MB y a veces contenido real > 50 MB
-  // - r2.1hanime.com es siempre contenido pero su CDN puede rechazar peticiones sin
-  //   las credenciales correctas; el sondeo lo confirma antes de pasarla al reproductor.
-  // Se elige la URL accesible más pesada = contenido real.
-  const probeHeaders = { Referer: embedUrl, Origin: PLAYER, "User-Agent": UA };
+  // Sondear todas las URLs capturadas en paralelo usando los headers que el browser
+  // capturó para cada URL — incluyen Cookie de sesión, Referer, User-Agent, etc.
+  // El CDN de r2.1hanime.com exige exactamente esas credenciales; probar con headers
+  // genéricos lo hace fallar aunque la URL sea válida. Con los headers correctos, el
+  // sondeo distingue contenido real (>50 MB) de anuncios (~3-5 MB) por Content-Length.
   const probeResults = await Promise.all(
     validMedia.map(async m => {
       const u = m.url || "";
       if (!u) return { m, ok: false, status: 0, bytes: 0 };
-      const probe = await probeUrl(u, probeHeaders, 5000);
+      // Usar los headers capturados del browser — son los únicos que el CDN acepta
+      const probe = await probeUrl(u, m.headers || {}, 5000);
       log(
         "Probe",
         u.replace(/^https?:\/\//, "").split("/").slice(0, 3).join("/"),
@@ -948,8 +948,9 @@ async function captureViaBrowser(embedUrl, episodeUrl) {
     return null;
   }
 
-  // Los headers capturados deben ir al reproductor tal cual — el CDN los valida.
-  // Si vienen vacíos, forzamos los mínimos que r2.1hanime.com exige.
+  // Los headers capturados ya incluyen Referer, User-Agent, Origin y la Cookie de
+  // sesión que el CDN valida. No sobreescribir nada — cualquier cambio rompe la firma
+  // o invalida la sesión. Solo rellenar si el browser no capturó nada en absoluto.
   const capturedHeaders = Object.assign({}, item.headers || {});
 
   if (!capturedHeaders.Referer && !capturedHeaders.referer) {
@@ -957,12 +958,6 @@ async function captureViaBrowser(embedUrl, episodeUrl) {
   }
   if (!capturedHeaders.Origin && !capturedHeaders.origin) {
     capturedHeaders.Origin = PLAYER;
-  }
-  // 1hanime signed URLs: force Referer + Origin + UA so the CDN worker validates correctly
-  if (/1hanime\.com/i.test(url)) {
-    capturedHeaders.Referer = embedUrl;
-    capturedHeaders.Origin = PLAYER;
-    capturedHeaders["User-Agent"] = UA;
   }
 
   log("Browser capture OK", url);
@@ -1081,13 +1076,12 @@ export async function resolve(ref) {
     );
 
     if (validMedia2.length) {
-      // Mismo sondeo que en la ruta principal
-      const probeHeaders2 = { Referer: embed, Origin: PLAYER, "User-Agent": UA };
+      // Mismo sondeo que en la ruta principal — headers del browser por URL, incluye Cookie
       const probeResults2 = await Promise.all(
         validMedia2.map(async m => {
           const u = m.url || "";
           if (!u) return { m, ok: false, status: 0, bytes: 0 };
-          const probe = await probeUrl(u, probeHeaders2, 5000);
+          const probe = await probeUrl(u, m.headers || {}, 5000);
           log("Probe (fallback)",
             u.replace(/^https?:\/\//, "").split("/").slice(0, 3).join("/"),
             "→", probe.status,
