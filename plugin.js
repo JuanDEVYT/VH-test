@@ -5,7 +5,7 @@ const TIMEOUT = 12000;
 const MAX_ITEMS = 60;
 const MAX_EPISODES = 3000;
 const LOG_PREFIX = "[veohentai]";
-const VERSION = "1.1.2";
+const VERSION = "1.1.3";
 const UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
 
 function log(...args) {
@@ -835,7 +835,7 @@ async function captureViaBrowser(embedUrl, episodeUrl) {
   const result = await kino.browser.capture(embedUrl, {
     headers: { Referer: episodeUrl || (BASE + "/") },
     match: "^https?://[^?#]+\\.mp4(\\?|$)|^https?://[^?#]+\\.m3u8(\\?|$)",
-    timeoutMs: 35000
+    timeoutMs: 25000
   });
 
   // kino.browser.capture devuelve { media, subtitles, requests, finalUrl }
@@ -985,7 +985,7 @@ export async function resolve(ref) {
     const result2 = await kino.browser.capture(embed, {
       headers: { Referer: episodeUrl || (BASE + "/") },
       match: "^https?://[^?#]+\\.mp4(\\?|$)|^https?://[^?#]+\\.m3u8(\\?|$)|prd\\.jwpltx\\.com",
-      timeoutMs: 50000
+      timeoutMs: 25000
     });
 
     const media2 = result2 && Array.isArray(result2.media) ? result2.media : [];
