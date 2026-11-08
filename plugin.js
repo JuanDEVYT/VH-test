@@ -5,7 +5,7 @@ const TIMEOUT = 12000;
 const MAX_ITEMS = 60;
 const MAX_EPISODES = 3000;
 const LOG_PREFIX = "[veohentai]";
-const VERSION = "1.1.9";
+const VERSION = "1.2.0";
 const UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
 
 function log(...args) {
@@ -827,6 +827,48 @@ function decodeAlternative(ref) {
   throw kino.error("not_found", "ese servidor ya no sirve");
 }
 
+// Sondea una URL de video con una petición de rango mínima.
+// Devuelve { ok, status, bytes } donde bytes es el tamaño total del archivo.
+// Permite distinguir contenido (> 10 MB) de anuncios (< 5 MB) y detectar
+// URLs inaccesibles (CDN rechaza con 403) antes de pasarlas al reproductor.
+async function probeUrl(url, headers, timeoutMs) {
+  try {
+    const r = await kino.fetch(url, {
+      headers: Object.assign({ Range: "bytes=0-0" }, headers || {}),
+      timeoutMs: timeoutMs || 4000
+    });
+
+    const ok = r.status === 200 || r.status === 206;
+
+    let bytes = 0;
+    if (r.headers) {
+      const getH = name => {
+        if (typeof r.headers.get === "function") {
+          return r.headers.get(name) || r.headers.get(name.toLowerCase()) || "";
+        }
+        return r.headers[name] || r.headers[name.toLowerCase()] || "";
+      };
+
+      // 206: Content-Range: bytes 0-0/TOTAL  →  extraer TOTAL
+      const cr = getH("content-range");
+      if (cr) {
+        const m = /\/(\d+)/.exec(cr);
+        if (m) bytes = parseInt(m[1]) || 0;
+      }
+
+      // Fallback: Content-Length en 200 sin rango (CDN que ignora Range)
+      if (!bytes) {
+        const cl = getH("content-length");
+        bytes = parseInt(cl) || 0;
+      }
+    }
+
+    return { ok, status: r.status, bytes };
+  } catch (e) {
+    return { ok: false, status: 0, bytes: 0 };
+  }
+}
+
 // Captura el request real al video usando kino.browser.
 // Abre el embed de hentaiplayer y espera el primer request a un .mp4 o .m3u8.
 async function captureViaBrowser(embedUrl, episodeUrl) {
@@ -853,10 +895,41 @@ async function captureViaBrowser(embedUrl, episodeUrl) {
     return null;
   }
 
-  // dreamserve.dev = ad CDN; skip it and prefer the actual content URL
-  const contentMedia = validMedia.filter(m => !/dreamserve\.dev/i.test(m.url || ""));
-  const item = contentMedia.length ? contentMedia[0] : validMedia[0];
+  // Sondear todas las URLs capturadas en paralelo:
+  // - dreamserve.dev a veces sirve anuncios de ~1-5 MB y a veces contenido real > 50 MB
+  // - r2.1hanime.com es siempre contenido pero su CDN puede rechazar peticiones sin
+  //   las credenciales correctas; el sondeo lo confirma antes de pasarla al reproductor.
+  // Se elige la URL accesible más pesada = contenido real.
+  const probeHeaders = { Referer: embedUrl, Origin: PLAYER, "User-Agent": UA };
+  const probeResults = await Promise.all(
+    validMedia.map(async m => {
+      const u = m.url || "";
+      if (!u) return { m, ok: false, status: 0, bytes: 0 };
+      const probe = await probeUrl(u, probeHeaders, 5000);
+      log(
+        "Probe",
+        u.replace(/^https?:\/\//, "").split("/").slice(0, 3).join("/"),
+        "→", probe.status,
+        probe.bytes ? (probe.bytes / 1048576).toFixed(1) + " MB" : "size unknown"
+      );
+      return { m, ...probe };
+    })
+  );
+
+  // Preferir la URL accesible de mayor tamaño (contenido > anuncio)
+  const accessible = probeResults
+    .filter(p => p.ok)
+    .sort((a, b) => b.bytes - a.bytes);
+
+  const item = accessible.length ? accessible[0].m : validMedia[0];
   let url = item.url || "";
+
+  if (accessible.length) {
+    log("Seleccionado por probe:", url.replace(/^https?:\/\//, "").split("/").slice(0, 3).join("/"),
+      (accessible[0].bytes / 1048576).toFixed(1) + " MB");
+  } else {
+    log("Probe: todas las URLs fallaron, usando primera disponible");
+  }
 
   // JWPlayer a veces dispara primero el ping de analytics (prd.jwpltx.com)
   // con la URL real del video codificada en el parámetro mu=.
@@ -1008,8 +1081,26 @@ export async function resolve(ref) {
     );
 
     if (validMedia2.length) {
-      const contentMedia2 = validMedia2.filter(m => !/dreamserve\.dev/i.test(m.url || ""));
-      const picked2 = contentMedia2.length ? contentMedia2[0] : validMedia2[0];
+      // Mismo sondeo que en la ruta principal
+      const probeHeaders2 = { Referer: embed, Origin: PLAYER, "User-Agent": UA };
+      const probeResults2 = await Promise.all(
+        validMedia2.map(async m => {
+          const u = m.url || "";
+          if (!u) return { m, ok: false, status: 0, bytes: 0 };
+          const probe = await probeUrl(u, probeHeaders2, 5000);
+          log("Probe (fallback)",
+            u.replace(/^https?:\/\//, "").split("/").slice(0, 3).join("/"),
+            "→", probe.status,
+            probe.bytes ? (probe.bytes / 1048576).toFixed(1) + " MB" : "size unknown");
+          return { m, ...probe };
+        })
+      );
+
+      const accessible2 = probeResults2
+        .filter(p => p.ok)
+        .sort((a, b) => b.bytes - a.bytes);
+
+      const picked2 = accessible2.length ? accessible2[0].m : validMedia2[0];
       let url2 = picked2.url || "";
 
       if (/prd\.jwpltx\.com/i.test(url2)) {
