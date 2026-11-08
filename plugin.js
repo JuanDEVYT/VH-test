@@ -5,7 +5,7 @@ const TIMEOUT = 12000;
 const MAX_ITEMS = 60;
 const MAX_EPISODES = 3000;
 const LOG_PREFIX = "[veohentai]";
-const VERSION = "1.2.1";
+const VERSION = "1.2.2";
 const UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
 
 function log(...args) {
@@ -869,98 +869,234 @@ async function probeUrl(url, headers, timeoutMs) {
   }
 }
 
+// Patrón de match que filtra anuncios por host conocido.
+const MEDIA_MATCH =
+  "^https?://(?!.*(?:ad[sz]?[.-]|doubleclick|googlesyndication|adnxs|advertising|adserver|adcdn|adsterra|popads|popcash|trafficjunky|adspyglass|exoclick|juicyads|plugrush|trafficfactory|adultadworld))[^?#]+\\.mp4(\\?|$)" +
+  "|" +
+  "^https?://(?!.*(?:ad[sz]?[.-]|doubleclick|googlesyndication|adnxs|advertising|adserver|adcdn|adsterra|popads|popcash|trafficjunky|adspyglass|exoclick|juicyads|plugrush|trafficfactory|adultadworld))[^?#]+\\.m3u8(\\?|$)";
+
+// Extrae la URL real de un ping de analytics de JWPlayer (parámetro mu=).
+function extractJwUrl(url) {
+  if (!/prd\.jwpltx\.com/i.test(url)) return url;
+  const muM = /[?&]mu=([^&]+)/.exec(url);
+  if (!muM) return url;
+  try { return decodeURIComponent(decodeURIComponent(muM[1])); }
+  catch { return decodeURIComponent(muM[1]); }
+}
+
+// Construye los headers finales del stream a partir de lo que capturó el browser.
+// Si captureAll devolvió cookies/userAgent (caso waitForCookie), los inyecta aquí
+// para que el reproductor los lleve al CDN — cf_clearance va atado al userAgent
+// de la misma sesión de browser.
+function buildStreamHeaders(itemHeaders, pageResult, embedUrl) {
+  const h = Object.assign({}, itemHeaders || {});
+
+  // Inyectar cf_clearance y demás cookies de Cloudflare si el browser las recogió.
+  // pageResult.cookies es un objeto plano { nombre: valor } con cf_* primero.
+  if (pageResult && pageResult.cookies && typeof pageResult.cookies === "object") {
+    const cfCookies = Object.entries(pageResult.cookies)
+      .filter(([k]) => /^cf_|^__cf/i.test(k))
+      .map(([k, v]) => k + "=" + v)
+      .join("; ");
+
+    if (cfCookies) {
+      // Combinar con cualquier Cookie que el browser ya puso en item.headers.
+      const existing = h.Cookie || h.cookie || "";
+      h.Cookie = existing
+        ? existing + "; " + cfCookies
+        : cfCookies;
+      log("Inyectadas cookies CF:", cfCookies.slice(0, 80));
+    }
+  }
+
+  // userAgent atado a cf_clearance — Cloudflare lo valida junto con la cookie.
+  if (pageResult && pageResult.userAgent && typeof pageResult.userAgent === "string") {
+    h["User-Agent"] = pageResult.userAgent;
+  }
+
+  if (!h.Referer && !h.referer) h.Referer = embedUrl;
+  if (!h.Origin && !h.origin) h.Origin = PLAYER;
+
+  return h;
+}
+
 // Captura el request real al video usando kino.browser.
-// Abre el embed de hentaiplayer y espera el primer request a un .mp4 o .m3u8.
+// Estrategia principal (captureAll disponible):
+//   - waitForCookie: "cf_clearance" → espera a que Cloudflare sette la cookie
+//     antes de capturar, así el token firmado de r2.1hanime.com llega con
+//     la sesión válida; si el CDN no usa Bot Management simplemente captura normal.
+//   - captureAll: true → recoge todas las coincidencias, luego sondea por tamaño.
+// Fallback (captureAll no disponible o primer intento fallido):
+//   - capture normal sin waitForCookie.
 async function captureViaBrowser(embedUrl, episodeUrl) {
   log("Browser capture", embedUrl);
 
+  const captureHeaders = { Referer: episodeUrl || (BASE + "/") };
+
+  // ── Ruta A: captureAll + waitForCookie (Kino ≥ 0.9.54) ──────────────────────
+  if (kino.browser.captureAll === true) {
+    log("captureAll disponible → usando waitForCookie=cf_clearance");
+
+    let result;
+    try {
+      result = await kino.browser.capture(embedUrl, {
+        headers: captureHeaders,
+        match: MEDIA_MATCH,
+        captureAll: true,
+        waitForCookie: "cf_clearance",
+        returnCookiesOnTimeout: true,
+        timeoutMs: 25000
+      });
+    } catch (e) {
+      // blocked / browser_unavailable → no reintentamos aquí; el llamador intenta fallback.
+      log("captureAll/waitForCookie falló:", e.message);
+      throw e;
+    }
+
+    if (result.timedOut) {
+      log("captureAll: timeout (cf_clearance no llegó o sin video en 25 s)");
+      // Si hay requests de alsoMatch, podríamos extraer info, pero aquí no usamos alsoMatch.
+      // Intentamos de todas formas con lo que haya.
+    }
+
+    const requests = result.requests || [];
+
+    // Buscar en requests (capturados con sus headers completos + cookies de sesión).
+    // requests[i] = { url, method, headers } donde headers ya llevan Cookie de la página.
+    const mediaRequests = requests.filter(r => new RegExp(MEDIA_MATCH, "i").test(r.url));
+
+    // También mirar result.media que devuelve la API estándar.
+    const mediaItems = Array.isArray(result.media) ? result.media : [];
+
+    // Unificar: preferir requests (tienen headers más ricos de la sesión real)
+    // sobre media (que son los mismos pero pueden llegar con menos headers en edge cases).
+    const candidates = mediaRequests.length
+      ? mediaRequests.map(r => ({ url: r.url, headers: r.headers || {}, mime: undefined }))
+      : mediaItems.map(m => ({ url: m.url, headers: m.headers || {}, mime: m.mime }));
+
+    if (!candidates.length) {
+      log("captureAll: sin candidatos de video");
+      // Caer al fallback simple.
+      return await captureViaBrowserSimple(embedUrl, episodeUrl);
+    }
+
+    // Sondear en paralelo — headers del browser + cookies CF inyectadas.
+    const probed = await Promise.all(
+      candidates.map(async c => {
+        let url = extractJwUrl(c.url || "");
+        if (!/^https?:\/\//i.test(url)) return null;
+        const h = buildStreamHeaders(c.headers, result, embedUrl);
+        const p = await probeUrl(url, h, 5000);
+        log(
+          "Probe(captureAll)",
+          url.replace(/^https?:\/\//, "").split("/").slice(0, 3).join("/"),
+          "→", p.status,
+          p.bytes ? (p.bytes / 1048576).toFixed(1) + " MB" : "size unknown"
+        );
+        return { url, headers: h, mime: c.mime, ...p };
+      })
+    );
+
+    const accessible = probed
+      .filter(p => p && p.ok)
+      .sort((a, b) => b.bytes - a.bytes);
+
+    // Umbral de anuncio: si todos los accesibles son < 10 MB, probablemente anuncios.
+    // El contenido real de hentaiplayer suele pesar > 50 MB.
+    const content = accessible.filter(p => p.bytes > 10 * 1024 * 1024);
+
+    const picked = content.length
+      ? content[0]
+      : accessible.length
+        ? accessible[0]
+        : probed.filter(Boolean)[0];
+
+    if (!picked || !/^https?:\/\//i.test(picked.url)) {
+      log("captureAll: probe no encontró URL válida, cayendo a fallback simple");
+      return await captureViaBrowserSimple(embedUrl, episodeUrl);
+    }
+
+    if (accessible.length && !content.length) {
+      log("Advertencia: solo streams pequeños (<10 MB), posible anuncio");
+    }
+
+    log("captureAll OK →", picked.url.replace(/^https?:\/\//, "").split("/").slice(0, 3).join("/"),
+      picked.bytes ? (picked.bytes / 1048576).toFixed(1) + " MB" : "");
+
+    const stream = {
+      url: picked.url,
+      mime: picked.mime || (/\.m3u8(\?|$)/i.test(picked.url) ? "application/x-mpegURL" : "video/mp4"),
+      headers: picked.headers
+    };
+
+    const subs = (result.subtitles || [])
+      .filter(s => s && /^https?:\/\//i.test(s.url || ""));
+    if (subs.length) {
+      stream.subtitles = subs.map(s => ({
+        url: s.url,
+        lang: s.lang || "es",
+        format: /\.vtt(\?|$)/i.test(s.url) ? "vtt" : "srt"
+      }));
+    }
+
+    return stream;
+  }
+
+  // ── Ruta B: capture simple (Kino < 0.9.54) ──────────────────────────────────
+  return await captureViaBrowserSimple(embedUrl, episodeUrl);
+}
+
+// Capture clásico sin captureAll — mismo comportamiento que la versión anterior.
+async function captureViaBrowserSimple(embedUrl, episodeUrl) {
+  log("Browser capture simple (sin captureAll)");
+
   const result = await kino.browser.capture(embedUrl, {
     headers: { Referer: episodeUrl || (BASE + "/") },
-    match: "^https?://(?!.*(?:ad[sz]?[.-]|doubleclick|googlesyndication|adnxs|advertising|adserver|adcdn|adsterra|popads|popcash|trafficjunky|adspyglass|exoclick|juicyads|plugrush|trafficfactory|adultadworld))[^?#]+\\.mp4(\\?|$)|^https?://(?!.*(?:ad[sz]?[.-]|doubleclick|googlesyndication|adnxs|advertising|adserver|adcdn|adsterra|popads|popcash|trafficjunky|adspyglass|exoclick|juicyads|plugrush|trafficfactory|adultadworld))[^?#]+\\.m3u8(\\?|$)",
+    match: MEDIA_MATCH,
     timeoutMs: 25000
   });
 
-  // kino.browser.capture devuelve { media, subtitles, requests, finalUrl }
-  // El video está en result.media[0]
   const media = result && Array.isArray(result.media) ? result.media : [];
-
-  // Descartar streams cortos (anuncios): menos de 5 minutos
-  const MIN_DURATION_S = 300;
   const validMedia = media.filter(
-    item => typeof item.duration !== "number" || item.duration >= MIN_DURATION_S
+    item => typeof item.duration !== "number" || item.duration >= 300
   );
 
   if (!validMedia.length) {
-    log("Browser capture: sin media válida (todos <5 min o sin video)");
+    log("Browser capture simple: sin media válida");
     return null;
   }
 
-  // Sondear todas las URLs capturadas en paralelo usando los headers que el browser
-  // capturó para cada URL — incluyen Cookie de sesión, Referer, User-Agent, etc.
-  // El CDN de r2.1hanime.com exige exactamente esas credenciales; probar con headers
-  // genéricos lo hace fallar aunque la URL sea válida. Con los headers correctos, el
-  // sondeo distingue contenido real (>50 MB) de anuncios (~3-5 MB) por Content-Length.
   const probeResults = await Promise.all(
     validMedia.map(async m => {
-      const u = m.url || "";
-      if (!u) return { m, ok: false, status: 0, bytes: 0 };
-      // Usar los headers capturados del browser — son los únicos que el CDN acepta
-      const probe = await probeUrl(u, m.headers || {}, 5000);
+      const u = extractJwUrl(m.url || "");
+      if (!u || !/^https?:\/\//i.test(u)) return { m, ok: false, status: 0, bytes: 0 };
+      const h = buildStreamHeaders(m.headers, null, embedUrl);
+      const probe = await probeUrl(u, h, 5000);
       log(
-        "Probe",
+        "Probe(simple)",
         u.replace(/^https?:\/\//, "").split("/").slice(0, 3).join("/"),
         "→", probe.status,
         probe.bytes ? (probe.bytes / 1048576).toFixed(1) + " MB" : "size unknown"
       );
-      return { m, ...probe };
+      return { m: { ...m, url: u }, ok: probe.ok, status: probe.status, bytes: probe.bytes };
     })
   );
 
-  // Preferir la URL accesible de mayor tamaño (contenido > anuncio)
   const accessible = probeResults
     .filter(p => p.ok)
     .sort((a, b) => b.bytes - a.bytes);
 
   const item = accessible.length ? accessible[0].m : validMedia[0];
-  let url = item.url || "";
-
-  if (accessible.length) {
-    log("Seleccionado por probe:", url.replace(/^https?:\/\//, "").split("/").slice(0, 3).join("/"),
-      (accessible[0].bytes / 1048576).toFixed(1) + " MB");
-  } else {
-    log("Probe: todas las URLs fallaron, usando primera disponible");
-  }
-
-  // JWPlayer a veces dispara primero el ping de analytics (prd.jwpltx.com)
-  // con la URL real del video codificada en el parámetro mu=.
-  // Extraemos esa URL en vez de descartar el resultado.
-  if (/prd\.jwpltx\.com/i.test(url)) {
-    const muM = /[?&]mu=([^&]+)/.exec(url);
-    if (muM) {
-      try { url = decodeURIComponent(decodeURIComponent(muM[1])); }
-      catch { url = decodeURIComponent(muM[1]); }
-      log("Browser capture: URL extraída del ping de analytics", url);
-    }
-  }
+  const url = extractJwUrl(item.url || "");
 
   if (!/^https?:\/\//i.test(url)) {
-    log("Browser capture: URL inválida", url);
+    log("Browser capture simple: URL inválida");
     return null;
   }
 
-  // Los headers capturados ya incluyen Referer, User-Agent, Origin y la Cookie de
-  // sesión que el CDN valida. No sobreescribir nada — cualquier cambio rompe la firma
-  // o invalida la sesión. Solo rellenar si el browser no capturó nada en absoluto.
-  const capturedHeaders = Object.assign({}, item.headers || {});
+  const capturedHeaders = buildStreamHeaders(item.headers, null, embedUrl);
 
-  if (!capturedHeaders.Referer && !capturedHeaders.referer) {
-    capturedHeaders.Referer = embedUrl;
-  }
-  if (!capturedHeaders.Origin && !capturedHeaders.origin) {
-    capturedHeaders.Origin = PLAYER;
-  }
-
-  log("Browser capture OK", url);
+  log("Browser capture simple OK", url);
 
   const stream = {
     url,
@@ -968,16 +1104,14 @@ async function captureViaBrowser(embedUrl, episodeUrl) {
     headers: capturedHeaders
   };
 
-  // Subtítulos capturados por el browser
-  const subs = result.subtitles || [];
+  const subs = (result.subtitles || [])
+    .filter(s => s && /^https?:\/\//i.test(s.url || ""));
   if (subs.length) {
-    stream.subtitles = subs
-      .filter(s => s && /^https?:\/\//i.test(s.url || ""))
-      .map(s => ({
-        url: s.url,
-        lang: s.lang || "es",
-        format: /\.vtt(\?|$)/i.test(s.url) ? "vtt" : "srt"
-      }));
+    stream.subtitles = subs.map(s => ({
+      url: s.url,
+      lang: s.lang || "es",
+      format: /\.vtt(\?|$)/i.test(s.url) ? "vtt" : "srt"
+    }));
   }
 
   return stream;
@@ -1054,75 +1188,6 @@ export async function resolve(ref) {
       label: msg("Reproducir", "Play"),
       expiresInSeconds: 300
     };
-  }
-
-  // --- Fallback: segundo intento con browser capture, más tiempo ---
-  // Las URLs firmadas de r2.1hanime.com solo son válidas en el contexto del
-  // browser que las generó — reproducirlas directamente desde getText da 403.
-  // Intentamos una segunda captura con 50 s, ampliando también el match al
-  // ping de analytics por si JWPlayer tarda en disparar el request al CDN.
-  log("Fallback a segundo browser capture (50 s)");
-
-  try {
-    const result2 = await kino.browser.capture(embed, {
-      headers: { Referer: episodeUrl || (BASE + "/") },
-      match: "^https?://(?!.*(?:ad[sz]?[.-]|doubleclick|googlesyndication|adnxs|advertising|adserver|adcdn|adsterra|popads|popcash|trafficjunky|adspyglass|exoclick|juicyads|plugrush|trafficfactory|adultadworld))[^?#]+\\.mp4(\\?|$)|^https?://(?!.*(?:ad[sz]?[.-]|doubleclick|googlesyndication|adnxs|advertising|adserver|adcdn|adsterra|popads|popcash|trafficjunky|adspyglass|exoclick|juicyads|plugrush|trafficfactory|adultadworld))[^?#]+\\.m3u8(\\?|$)|prd\\.jwpltx\\.com",
-      timeoutMs: 25000
-    });
-
-    const media2 = result2 && Array.isArray(result2.media) ? result2.media : [];
-    const validMedia2 = media2.filter(
-      m => typeof m.duration !== "number" || m.duration >= 300
-    );
-
-    if (validMedia2.length) {
-      // Mismo sondeo que en la ruta principal — headers del browser por URL, incluye Cookie
-      const probeResults2 = await Promise.all(
-        validMedia2.map(async m => {
-          const u = m.url || "";
-          if (!u) return { m, ok: false, status: 0, bytes: 0 };
-          const probe = await probeUrl(u, m.headers || {}, 5000);
-          log("Probe (fallback)",
-            u.replace(/^https?:\/\//, "").split("/").slice(0, 3).join("/"),
-            "→", probe.status,
-            probe.bytes ? (probe.bytes / 1048576).toFixed(1) + " MB" : "size unknown");
-          return { m, ...probe };
-        })
-      );
-
-      const accessible2 = probeResults2
-        .filter(p => p.ok)
-        .sort((a, b) => b.bytes - a.bytes);
-
-      const picked2 = accessible2.length ? accessible2[0].m : validMedia2[0];
-      let url2 = picked2.url || "";
-
-      if (/prd\.jwpltx\.com/i.test(url2)) {
-        const muM = /[?&]mu=([^&]+)/.exec(url2);
-        if (muM) {
-          try { url2 = decodeURIComponent(decodeURIComponent(muM[1])); }
-          catch { url2 = decodeURIComponent(muM[1]); }
-          log("Fallback: URL extraída del ping de analytics", url2);
-        }
-      }
-
-      if (/^https?:\/\//i.test(url2)) {
-        const capturedHeaders2 = Object.assign({}, picked2.headers || {});
-        if (!capturedHeaders2.Referer && !capturedHeaders2.referer) capturedHeaders2.Referer = embed;
-        if (!capturedHeaders2.Origin && !capturedHeaders2.origin) capturedHeaders2.Origin = PLAYER;
-
-        log("Resolución completada (fallback browser)", slug);
-        return {
-          url: url2,
-          mime: /\.m3u8(\?|$)/i.test(url2) ? "application/x-mpegURL" : "video/mp4",
-          headers: capturedHeaders2,
-          label: msg("Reproducir", "Play"),
-          expiresInSeconds: 300
-        };
-      }
-    }
-  } catch (e) {
-    log("Fallback browser capture falló", e.message);
   }
 
   // --- Último recurso: parsear HTML del player ---
