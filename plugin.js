@@ -5,7 +5,7 @@ const TIMEOUT = 12000;
 const MAX_ITEMS = 60;
 const MAX_EPISODES = 3000;
 const LOG_PREFIX = "[veohentai]";
-const VERSION = "1.1.7";
+const VERSION = "1.1.8";
 const UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
 
 function log(...args) {
@@ -853,8 +853,13 @@ async function captureViaBrowser(embedUrl, episodeUrl) {
     return null;
   }
 
-  // Ads pre-roll first → their URL lands at index 0; real content loads last
-  const item = validMedia[validMedia.length - 1];
+  // Deprioritize session-bound signed URLs (verify= token requires the capture browser context)
+  const sortedMedia = [...validMedia].sort((a, b) => {
+    const aV = /[?&]verify=/i.test(a.url || "");
+    const bV = /[?&]verify=/i.test(b.url || "");
+    return aV - bV; // non-verify first
+  });
+  const item = sortedMedia[0];
   let url = item.url || "";
 
   // JWPlayer a veces dispara primero el ping de analytics (prd.jwpltx.com)
@@ -1001,7 +1006,12 @@ export async function resolve(ref) {
     );
 
     if (validMedia2.length) {
-      let url2 = validMedia2[validMedia2.length - 1].url || "";
+      const sortedMedia2 = [...validMedia2].sort((a, b) => {
+        const aV = /[?&]verify=/i.test(a.url || "");
+        const bV = /[?&]verify=/i.test(b.url || "");
+        return aV - bV;
+      });
+      let url2 = sortedMedia2[0].url || "";
 
       if (/prd\.jwpltx\.com/i.test(url2)) {
         const muM = /[?&]mu=([^&]+)/.exec(url2);
@@ -1013,7 +1023,7 @@ export async function resolve(ref) {
       }
 
       if (/^https?:\/\//i.test(url2)) {
-        const capturedHeaders2 = Object.assign({}, validMedia2[validMedia2.length - 1].headers || {});
+        const capturedHeaders2 = Object.assign({}, sortedMedia2[0].headers || {});
         if (!capturedHeaders2.Referer && !capturedHeaders2.referer) capturedHeaders2.Referer = embed;
         if (!capturedHeaders2.Origin && !capturedHeaders2.origin) capturedHeaders2.Origin = PLAYER;
 
