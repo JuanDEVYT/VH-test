@@ -5,7 +5,7 @@ const TIMEOUT = 12000;
 const MAX_ITEMS = 60;
 const MAX_EPISODES = 3000;
 const LOG_PREFIX = "[veohentai]";
-const VERSION = "1.1.1";
+const VERSION = "1.1.2";
 const UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
 
 function log(...args) {
@@ -835,7 +835,7 @@ async function captureViaBrowser(embedUrl, episodeUrl) {
   const result = await kino.browser.capture(embedUrl, {
     headers: { Referer: episodeUrl || (BASE + "/") },
     match: "^https?://[^?#]+\\.mp4(\\?|$)|^https?://[^?#]+\\.m3u8(\\?|$)",
-    timeoutMs: 20000
+    timeoutMs: 35000
   });
 
   // kino.browser.capture devuelve { media, subtitles, requests, finalUrl }
@@ -974,8 +974,55 @@ export async function resolve(ref) {
     };
   }
 
-  // --- Fallback: parsear el HTML del player directamente ---
-  log("Fallback a parseo directo");
+  // --- Fallback: segundo intento con browser capture, más tiempo ---
+  // Las URLs firmadas de r2.1hanime.com solo son válidas en el contexto del
+  // browser que las generó — reproducirlas directamente desde getText da 403.
+  // Intentamos una segunda captura con 50 s, ampliando también el match al
+  // ping de analytics por si JWPlayer tarda en disparar el request al CDN.
+  log("Fallback a segundo browser capture (50 s)");
+
+  try {
+    const result2 = await kino.browser.capture(embed, {
+      headers: { Referer: episodeUrl || (BASE + "/") },
+      match: "^https?://[^?#]+\\.mp4(\\?|$)|^https?://[^?#]+\\.m3u8(\\?|$)|prd\\.jwpltx\\.com",
+      timeoutMs: 50000
+    });
+
+    const media2 = result2 && Array.isArray(result2.media) ? result2.media : [];
+
+    if (media2.length) {
+      let url2 = media2[0].url || "";
+
+      if (/prd\.jwpltx\.com/i.test(url2)) {
+        const muM = /[?&]mu=([^&]+)/.exec(url2);
+        if (muM) {
+          try { url2 = decodeURIComponent(decodeURIComponent(muM[1])); }
+          catch { url2 = decodeURIComponent(muM[1]); }
+          log("Fallback: URL extraída del ping de analytics", url2);
+        }
+      }
+
+      if (/^https?:\/\//i.test(url2)) {
+        const capturedHeaders2 = Object.assign({}, media2[0].headers || {});
+        if (!capturedHeaders2.Referer && !capturedHeaders2.referer) capturedHeaders2.Referer = embed;
+        if (!capturedHeaders2.Origin && !capturedHeaders2.origin) capturedHeaders2.Origin = PLAYER;
+
+        log("Resolución completada (fallback browser)", slug);
+        return {
+          url: url2,
+          mime: /\.m3u8(\?|$)/i.test(url2) ? "application/x-mpegURL" : "video/mp4",
+          headers: capturedHeaders2,
+          label: msg("Reproducir", "Play"),
+          expiresInSeconds: 300
+        };
+      }
+    }
+  } catch (e) {
+    log("Fallback browser capture falló", e.message);
+  }
+
+  // --- Último recurso: parsear HTML del player ---
+  log("Último recurso: parseo directo del player");
 
   let page;
 
