@@ -1457,14 +1457,20 @@ export async function screenEvent({ name, value, arg, state = {} }) {
     return { state: { ...state, results: [], searched: false, query: '', searchOpen: false, section: 'catalog' } };
   }
 
+  // "Ver ahora" del heroCard: abrir la ficha del título
   if (name === 'hero-open') {
     try {
       const item = JSON.parse(arg || '{}');
-      if (item.ref) {
-        return { state: { ...state } };
-        // go to title handled by titleCard native tap — hero-open is a passthrough
+      if (item.ref && item.kind) {
+        const go = { ref: item.ref, kind: item.kind };
+        if (item.id)    go.id = item.id;
+        if (item.title) go.title = item.title;
+        return { go: { title: go } };
       }
-    } catch {}
+      log('hero-open sin ref o kind', String(arg || '').slice(0, 80));
+    } catch (e) {
+      log('hero-open arg inválido', e.message);
+    }
     return null;
   }
 
