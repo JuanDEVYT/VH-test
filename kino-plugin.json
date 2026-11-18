@@ -1,36 +1,38 @@
 {
-    "id":  "veohentai",
-    "name":  "VeoHentai Multi",
-    "version":  "1.1.0",
-    "apiVersion":  14,
-    "entry":  "plugin.js",
-    "description":  "Catalogo de VeoAnime con reproduccion desde Hentaila.com y Hentaila.tv.",
-    "author":  "Vaysin",
-    "icon":  "icon.png",
-    "color":  "#E23A5E",
-    "hosts":  [
-                  "veohentai.com",
-                  "*.veohentai.com",
-                  "hentaiplayer.com",
-                  "*.hentaiplayer.com",
-                  "hentaila.com",
-                  "*.hentaila.com",
-                  "hentaila.tv",
-                  "*.hentaila.tv",
-                  "voe.sx",
-                  "*.voe.sx",
-                  "octopusmanifest.org",
-                  "*.octopusmanifest.org",
-                  "susanexpectcare.com"
-              ],
-    "streamHosts":  "any",
-    "screen": { "label": "Buscar", "icon": "search" },
-    "capabilities":  [
-                         "home",
-                         "search",
-                         "episodes",
-                         "resolve",
-                         "screen"
-                     ]
+  "id": "veohentai",
+  "name": "Veo Hentai",
+  "version": "2.0.0",
+  "apiVersion": 14,
+  "entry": "plugin.js",
+  "description": "Catalogo de VeoAnime con reproduccion desde Hentaila.com y Hentaila.tv.",
+  "author": "moore-debug12",
+  "icon": "icon.png",
+  "color": "#E23A5E",
+  "hosts": [
+    "veohentai.com",
+    "*.veohentai.com",
+    "hentaiplayer.com",
+    "*.hentaiplayer.com",
+    "hentaila.com",
+    "*.hentaila.com",
+    "hentaila.tv",
+    "*.hentaila.tv",
+    "voe.sx",
+    "*.voe.sx",
+    "octopusmanifest.org",
+    "*.octopusmanifest.org",
+    "susanexpectcare.com"
+  ],
+  "streamHosts": "any",
+  "screen": {
+    "label": "Buscar",
+    "icon": "search"
+  },
+  "capabilities": [
+    "home",
+    "search",
+    "episodes",
+    "resolve",
+    "screen"
+  ]
 }
-
