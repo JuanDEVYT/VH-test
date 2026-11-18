@@ -1,13 +1,15 @@
 {
   "id": "veohentai",
   "name": "Veo Hentai",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "apiVersion": 14,
   "entry": "plugin.js",
-  "description": "Catalogo de VeoAnime con reproduccion desde Hentaila.com y Hentaila.tv.",
+  "description": "Catálogo de VeoAnime con reproducción desde Hentaila.com y Hentaila.tv.",
   "author": "moore-debug12",
+  "homepage": "https://github.com/sonny-debug12/veohentai-kino",
   "icon": "icon.png",
   "color": "#E23A5E",
+  "categories": ["anime", "adult"],
   "hosts": [
     "veohentai.com",
     "*.veohentai.com",
@@ -15,18 +17,23 @@
     "*.hentaiplayer.com",
     "hentaila.com",
     "*.hentaila.com",
+    "www5.hentaila.com",
     "hentaila.tv",
     "*.hentaila.tv",
     "voe.sx",
     "*.voe.sx",
+    "arianathankspecial.com",
+    "*.arianathankspecial.com",
     "octopusmanifest.org",
     "*.octopusmanifest.org",
     "susanexpectcare.com"
   ],
+  "fetchHosts": "any",
   "streamHosts": "any",
   "screen": {
-    "label": "Buscar",
-    "icon": "search"
+    "label": "Explorar",
+    "labelEn": "Explore",
+    "icon": "play"
   },
   "capabilities": [
     "home",
