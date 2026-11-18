@@ -1183,19 +1183,24 @@ try {
 
 }
 
+// Caché de sesión: las filas del catálogo son ~52 KB y el estado tope es 64 KB
+let rowsCache = null;
+let genresCache = null;
+
 export async function screen({ state = {}, device = 'phone', size = 'compact' } = {}) {
   const isTv = device === 'tv';
   const cols = isTv ? 6 : { compact: 3, medium: 4, expanded: 5 };
   const section = state.section === 'genres' ? 'genres' : 'catalog';
   const results = Array.isArray(state.results) ? state.results : [];
-  const genres  = Array.isArray(state.genres)  ? state.genres  : [];
+  const genres  = Array.isArray(state.genres) && state.genres.length > 0 ? state.genres : (genresCache || []);
   const genreItems = Array.isArray(state.genreItems) ? state.genreItems : [];
 
-  // Fix #5: cache home() rows in state — only fetch once per session
-  let rows = Array.isArray(state.rows) ? state.rows : [];
-  if (section === 'catalog' && !state.selectedGenre && !state.searched && rows.length === 0) {
-    try { rows = await home(); } catch (e) { log('home en screen fallido', e.message); }
+  // Las filas viven en la caché de sesión: volver al catálogo no vuelve a pedirlas
+  let rows = Array.isArray(state.rows) ? state.rows : rowsCache;
+  if (!rows && section === 'catalog' && !state.selectedGenre && !state.searched) {
+    try { rows = await home(); rowsCache = rows; } catch (e) { log('home en screen fallido', e.message); rows = []; }
   }
+  rows = rows || [];
 
   // Hero: primer ítem del primer rail
   const heroItem = rows.length > 0 && Array.isArray(rows[0].items) && rows[0].items.length > 0
@@ -1277,20 +1282,24 @@ export async function screen({ state = {}, device = 'phone', size = 'compact' } 
             onTap: { event: 'genre', arg: g.slug }
           })) }
       ];
+    } else if (state.genresError && state.genresTried) {
+      bodyChildren = [{ type: 'errorState',
+        title: 'Error al cargar géneros', titleEn: 'Could not load genres',
+        text: 'Toca para reintentar.', textEn: 'Tap to retry.',
+        onRetry: 'retry-genres' }];
     } else {
-      bodyChildren = [state.genresError
-        ? { type: 'errorState',
-            title: 'Error al cargar géneros', titleEn: 'Could not load genres',
-            text: 'Toca para reintentar.', textEn: 'Tap to retry.',
-            onRetry: 'retry-genres' }
-        : { type: 'loading' }
-      ];
+      // La sección ya está pintada: el tick `hydrate-genres` trae la lista
+      bodyChildren = [{ type: 'loading' }];
     }
   }
+
+  // Mientras falten los géneros, un tick los pide y la pantalla ya muestra su sección
+  const needsGenres = genres.length === 0 && !(state.genresTried === true && state.genresError === true);
 
   // ── Scaffold con AppBar + NavigationBar ─────────────────────────────────
   return {
     type: 'Scaffold',
+    ...(needsGenres ? { every: { ms: 1000, event: 'hydrate-genres' } } : {}),
     appBar: {
       type: 'AppBar',
       dense: true,
@@ -1342,30 +1351,35 @@ export async function screenEvent({ name, value, arg, state = {} }) {
   }
 
   if (name === 'section') {
-    // Fix #9: limpiar results y searched al cambiar sección
-    const base = { ...state, section: value, results: [], searched: false, searchOpen: false };
-    if (value === 'genres' && !(Array.isArray(state.genres) && state.genres.length > 0)) {
-      try {
-        const genres = await getGenres();
-        return { state: { ...base, genres, genresError: false, selectedGenre: null, genreItems: [] } };
-      } catch (e) {
-        log('Carga de géneros fallida', e.message);
-        return {
-          state: { ...base, genres: [], genresError: true, selectedGenre: null, genreItems: [] },
-          toast: 'No se pudieron cargar los géneros.'
-        };
+    // Cambia de sección al instante: si faltan datos, la pantalla pinta su spinner
+    const base = { ...state, section: value, results: [], searched: false, searchOpen: false,
+                   selectedGenre: null, genreItems: [] };
+    if (value === 'genres') {
+      const cached = Array.isArray(state.genres) && state.genres.length > 0 ? state.genres : genresCache;
+      if (cached && cached.length > 0) {
+        return { state: { ...base, genres: cached, genresTried: true, genresLoading: false, genresError: false } };
       }
+      return { state: { ...base, genres: [], genresLoading: true } };
     }
-    return { state: { ...base, selectedGenre: null, genreItems: [] } };
+    return { state: base };
+  }
+
+  // Tick del screen (`every`): trae los géneros sin retener el cambio de sección
+  if (name === 'hydrate-genres') {
+    if (Array.isArray(state.genres) && state.genres.length > 0) return null;
+    try {
+      const genres = genresCache && genresCache.length > 0 ? genresCache : await getGenres();
+      genresCache = genres;
+      return { state: { ...state, genres, genresLoading: false, genresTried: true, genresError: false } };
+    } catch (e) {
+      log('Carga de géneros fallida', e.message);
+      return { state: { ...state, genresLoading: false, genresTried: true, genresError: true } };
+    }
   }
 
   if (name === 'retry-genres') {
-    try {
-      const genres = await getGenres();
-      return { state: { ...state, genres, genresError: false } };
-    } catch (e) {
-      return { toast: 'Error al cargar géneros. Intenta de nuevo.' };
-    }
+    // Vuelve al spinner y deja que el tick reintente
+    return { state: { ...state, genres: [], genresLoading: true, genresTried: false, genresError: false } };
   }
 
   if (name === 'genre') {
