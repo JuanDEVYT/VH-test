@@ -1265,19 +1265,17 @@ export async function screen({ state = {}, device = 'phone', size = 'compact' } 
         )
       ];
     } else if (genres.length > 0) {
-      // Fix #6: géneros como titleCards con poster
-      const genreCards = genres.map(g => ({
-        id:     'genre-' + g.slug,
-        ref:    g.slug,
-        title:  g.title,
-        kind:   'movie',
-        poster: g.image || ''
-      }));
+      // Géneros como lista normal: filas con el nombre, sin portadas
       bodyChildren = [
         { type: 'Text', text: 'Explorar por género', textEn: 'Browse by genre',
           style: 'h4', padding: 16 },
-        { type: 'titleGrid', columns: cols, items: genreCards,
-          onEndReached: undefined, done: true }
+        { type: 'Column', gap: 0, children: genres.map(g => ({
+            type: 'ListTile',
+            key: 'genre-' + g.slug,
+            title: g.title,
+            dense: true,
+            onTap: { event: 'genre', arg: g.slug }
+          })) }
       ];
     } else {
       bodyChildren = [state.genresError
